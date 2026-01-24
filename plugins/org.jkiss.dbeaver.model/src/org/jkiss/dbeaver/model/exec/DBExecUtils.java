@@ -1,6 +1,6 @@
 /*
  * DBeaver - Universal Database Manager
- * Copyright (C) 2010-2025 DBeaver Corp and others
+ * Copyright (C) 2010-2026 DBeaver Corp and others
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -31,6 +31,7 @@ import org.jkiss.dbeaver.model.data.*;
 import org.jkiss.dbeaver.model.edit.DBECommand;
 import org.jkiss.dbeaver.model.edit.DBECommandContext;
 import org.jkiss.dbeaver.model.edit.DBEPersistAction;
+import org.jkiss.dbeaver.model.impl.AbstractExecutionContext;
 import org.jkiss.dbeaver.model.impl.DBObjectNameCaseTransformer;
 import org.jkiss.dbeaver.model.impl.edit.SQLDatabasePersistAction;
 import org.jkiss.dbeaver.model.impl.edit.SQLDatabasePersistActionComment;
@@ -412,7 +413,7 @@ public class DBExecUtils {
             return;
         }
 
-        DBCExecutionContextDefaults contextDefaults = null;
+        DBCExecutionContextDefaults<?,?> contextDefaults = null;
         if (executionContext != null) {
             contextDefaults = executionContext.getContextDefaults();
         }
@@ -482,8 +483,9 @@ public class DBExecUtils {
             DBCTransactionManager transactionManager = DBUtils.getTransactionManager(executionContext);
             if (transactionManager != null) {
                 new AbstractJob("Recover smart commit mode") {
+                    @NotNull
                     @Override
-                    protected IStatus run(DBRProgressMonitor monitor) {
+                    protected IStatus run(@NotNull DBRProgressMonitor monitor) {
                         if (!executionContext.isConnected()) {
                             return Status.OK_STATUS;
                         }
@@ -505,24 +507,26 @@ public class DBExecUtils {
         }
     }
 
-    public static DBSEntityConstraint getBestIdentifier(@Nullable DBRProgressMonitor monitor, @NotNull DBSEntity table, DBDAttributeBinding[] bindings)
-        throws DBException
-    {
-        if (table instanceof DBSDocumentContainer) {
-            return new DBSDocumentConstraint((DBSDocumentContainer) table);
+    public static DBSEntityConstraint getBestIdentifier(
+        @NotNull DBRProgressMonitor monitor,
+        @NotNull DBSEntity table,
+        @NotNull DBDAttributeBinding[] bindings
+    ) throws DBException {
+        if (table instanceof DBSDocumentContainer documentContainer) {
+            return new DBSDocumentConstraint(documentContainer);
         }
         List<DBSEntityConstraint> identifiers = new ArrayList<>(2);
         //List<DBSEntityConstraint> nonIdentifyingConstraints = null;
 
         {
-            if (table instanceof DBSTable && ((DBSTable) table).isView()) {
+            if (table instanceof DBSTable dbsTable && dbsTable.isView()) {
                 // Skip physical identifiers for views. There are nothing anyway
 
             } else {
                 // Check indexes first.
-                if (table instanceof DBSTable) {
+                if (table instanceof DBSTable dbsTable) {
                     try {
-                        Collection<? extends DBSTableIndex> indexes = ((DBSTable) table).getIndexes(monitor);
+                        Collection<? extends DBSTableIndex> indexes = dbsTable.getIndexes(monitor);
                         if (!CommonUtils.isEmpty(indexes)) {
                             // First search for primary index
                             for (DBSTableIndex index : indexes) {
@@ -569,8 +573,7 @@ public class DBExecUtils {
             // Find PK or unique key
             DBSEntityConstraint uniqueId = null;
             for (DBSEntityConstraint constraint : identifiers) {
-                if (constraint instanceof DBSEntityReferrer) {
-                    DBSEntityReferrer referrer = (DBSEntityReferrer) constraint;
+                if (constraint instanceof DBSEntityReferrer referrer) {
                     if (isGoodReferrer(monitor, bindings, referrer)) {
                         if (referrer.getConstraintType() == DBSEntityConstraintType.PRIMARY_KEY) {
                             return referrer;
@@ -657,16 +660,16 @@ public class DBExecUtils {
             CommonUtils.equalObjects(attr1.getTypeName(), attr2.getTypeName());
     }
 
-    public static double makeNumericValue(Object value) {
+    public static double makeNumericValue(@Nullable Object value) {
         if (value == null) {
             return 0;
-        } else if (value instanceof Number) {
-            return ((Number) value).doubleValue();
-        } else if (value instanceof Date) {
-            return ((Date) value).getTime();
-        } else if (value instanceof String) {
+        } else if (value instanceof Number number) {
+            return number.doubleValue();
+        } else if (value instanceof Date date) {
+            return date.getTime();
+        } else if (value instanceof String string) {
             try {
-                return Double.parseDouble((String) value);
+                return Double.parseDouble(string);
             } catch (NumberFormatException e) {
                 return 0.0;
             }
@@ -704,15 +707,15 @@ public class DBExecUtils {
 
                     monitor.subTask("Discover owner entity");
                     DBSDataContainer dataContainer = executionSource.getDataContainer();
-                    if (dataContainer instanceof DBSEntity) {
-                        entity = (DBSEntity) dataContainer;
+                    if (dataContainer instanceof DBSEntity entity1) {
+                        entity = entity1;
                     }
                     DBCEntityMetaData entityMeta = null;
                     if (entity == null) {
                         // Discover from entity metadata
                         Object sourceDescriptor = executionSource.getSourceDescriptor();
-                        if (sourceDescriptor instanceof SQLQuery) {
-                            sqlQuery = (SQLQuery) sourceDescriptor;
+                        if (sourceDescriptor instanceof SQLQuery query) {
+                            sqlQuery = query;
                             entityMeta = sqlQuery.getEntityMetadata(false);
                         }
                         if (entityMeta != null) {
@@ -978,7 +981,7 @@ public class DBExecUtils {
     }
 
     public static String getAttributeReadOnlyStatus(@NotNull DBDAttributeBinding attribute, boolean checkValidKey) {
-        if (attribute == null || attribute.getMetaAttribute() == null) {
+        if (attribute.getMetaAttribute() == null) {
             return "Null meta attribute";
         }
         if (attribute.getMetaAttribute().isReadOnly()) {
@@ -1039,7 +1042,7 @@ public class DBExecUtils {
         if (actions == null) {
             actions = new ArrayList<>();
         }
-        for (DBECommand cmd : commandContext.getFinalCommands()) {
+        for (DBECommand<?> cmd : commandContext.getFinalCommands()) {
             DBEPersistAction[] persistActions = cmd.getPersistActions(monitor, executionContext, options);
             if (persistActions != null) {
                 Collections.addAll(actions, persistActions);
@@ -1086,4 +1089,22 @@ public class DBExecUtils {
         }
         return false;
     }
+
+    public static <CONTEXT extends AbstractExecutionContext<?,?>> CONTEXT tryOpenContext(
+        @NotNull CONTEXT executionContext,
+        @NotNull DBRRunnableWithParam<CONTEXT> runnable
+    ) throws DBException {
+        try {
+            runnable.run(executionContext);
+        } catch (Exception e) {
+            try {
+                executionContext.close();
+            } catch (Exception ex) {
+                log.debug("Error while closing just opened context");
+            }
+            throw e;
+        }
+        return executionContext;
+    }
+
 }

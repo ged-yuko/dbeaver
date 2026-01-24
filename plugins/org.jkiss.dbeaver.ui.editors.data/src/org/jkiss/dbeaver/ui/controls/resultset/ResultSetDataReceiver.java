@@ -1,6 +1,6 @@
 /*
  * DBeaver - Universal Database Manager
- * Copyright (C) 2010-2025 DBeaver Corp and others
+ * Copyright (C) 2010-2026 DBeaver Corp and others
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -186,6 +186,7 @@ class ResultSetDataReceiver implements DBDDataReceiver, DBDDataReceiverInteracti
         hasMoreData = maxRows > 0 && tmpRows.size() >= maxRows;
         monitor.done();
 
+        monitor.subTask("Update presentation");
         UIUtils.syncExec(() -> {
             // Push data into viewer
             if (resultSetViewer.getControl().isDisposed()) {
@@ -196,6 +197,11 @@ class ResultSetDataReceiver implements DBDDataReceiver, DBDDataReceiverInteracti
                 resultSetViewer.updatePresentation(resultSet, metadataChanged);
                 resultSetViewer.getActivePresentation().refreshData(true, false, !metadataChanged);
                 resultSetViewer.updateStatusMessage();
+
+                if (resultSetViewer.getPreferenceStore().getBoolean(ResultSetPreferences.RESULT_SET_AUTOMATIC_ROW_COUNT)){
+                    resultSetViewer.updateRowCount(false);
+                }
+
             } else {
                 resultSetViewer.getActivePresentation().refreshData(false, true, true);
             }

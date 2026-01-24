@@ -1,6 +1,6 @@
 /*
  * DBeaver - Universal Database Manager
- * Copyright (C) 2010-2025 DBeaver Corp and others
+ * Copyright (C) 2010-2026 DBeaver Corp and others
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,20 +16,20 @@
  */
 package org.jkiss.dbeaver.ui.editors;
 
-import org.eclipse.core.resources.IFile;
-import org.eclipse.ui.part.FileEditorInput;
+import org.eclipse.core.filesystem.IFileStore;
+import org.eclipse.ui.ide.FileStoreEditorInput;
 import org.jkiss.code.NotNull;
 import org.jkiss.code.Nullable;
 
 import java.net.URI;
 import java.nio.file.Path;
 
-public class IncludedScriptFileEditorInput extends FileEditorInput {
+public class IncludedScriptFileEditorInput extends FileStoreEditorInput {
 
     private final Path includedScriptFile;
     private DatabaseEditorContext databaseEditorContext;
 
-    public IncludedScriptFileEditorInput(@NotNull IFile incIFile, @NotNull Path includedScriptFile) {
+    public IncludedScriptFileEditorInput(@NotNull IFileStore incIFile, @NotNull Path includedScriptFile) {
         super(incIFile);
         this.includedScriptFile = includedScriptFile;
     }
@@ -52,5 +52,10 @@ public class IncludedScriptFileEditorInput extends FileEditorInput {
 
     public void setDatabaseEditorContext(@Nullable DatabaseEditorContext databaseEditorContext) {
         this.databaseEditorContext = databaseEditorContext;
+    }
+
+    @Override
+    public String toString() {
+        return "IncludedScriptFileEditorInput (" + includedScriptFile + ")";
     }
 }

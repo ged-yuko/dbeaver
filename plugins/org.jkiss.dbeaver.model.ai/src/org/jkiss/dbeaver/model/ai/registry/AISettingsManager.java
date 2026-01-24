@@ -1,6 +1,6 @@
 /*
  * DBeaver - Universal Database Manager
- * Copyright (C) 2010-2025 DBeaver Corp and others
+ * Copyright (C) 2010-2026 DBeaver Corp and others
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -26,7 +26,6 @@ import org.jkiss.dbeaver.model.ai.AISettings;
 import org.jkiss.dbeaver.model.ai.engine.AIEngineProperties;
 import org.jkiss.dbeaver.model.ai.engine.openai.OpenAIConstants;
 import org.jkiss.dbeaver.model.app.DBPApplication;
-import org.jkiss.dbeaver.model.auth.SMSessionPersistent;
 import org.jkiss.dbeaver.model.data.json.JSONUtils;
 import org.jkiss.dbeaver.model.rm.RMConstants;
 import org.jkiss.dbeaver.runtime.DBWorkbench;
@@ -45,14 +44,15 @@ public class AISettingsManager {
     private static final String ACTIVE_ENGINE_KEY = "activeEngine";
     private static final String PROPERTIES_KEY = "properties";
     private static final String ENGINE_CONFIGURATIONS_KEY = "engineConfigurations";
+    private static final String FUNCTIONS_ENABLED_KEY = "functionsEnabled";
     private static final String ENABLED_FUNCTION_CATEGORIES_KEY = "enabledFunctionCategories";
     private static final String ENABLED_FUNCTIONS_KEY = "enabledFunctions";
     public static final String ENGINE_PROPERTIES = "properties";
 
     private static AISettingsManager instance = null;
 
-    private static final Gson readPropsGson = createPropertiesLoadGson();
-    private static final Gson savePropsGson = createPropertiesSaveGson();
+    public static final Gson READ_PROPS_GSON = createPropertiesLoadGson();
+    public static final Gson SAVE_PROPS_GSON = createPropertiesSaveGson();
 
     private final Set<AISettingsEventListener> settingsChangedListeners = Collections.synchronizedSet(new HashSet<>());
 
@@ -87,11 +87,7 @@ public class AISettingsManager {
     }
 
     private AISettingsHolder getSettingsHolder() {
-        if (DBWorkbench.getPlatform().getWorkspace().getWorkspaceSession() instanceof SMSessionPersistent session) {
-            return AISettingsSessionHolder.getForSession(session);
-        } else {
-            return AISettingsLocalHolder.INSTANCE;
-        }
+        return AISettingsLocalHolder.INSTANCE;
     }
 
     @NotNull
@@ -105,7 +101,7 @@ public class AISettingsManager {
         try {
             String content = loadConfig();
             if (!CommonUtils.isEmpty(content)) {
-                configMap = readPropsGson.fromJson(new StringReader(content), JSONUtils.MAP_TYPE_TOKEN);
+                configMap = READ_PROPS_GSON.fromJson(new StringReader(content), JSONUtils.MAP_TYPE_TOKEN);
             }
         } catch (Exception e) {
             log.error("Error loading AI settings, falling back to defaults.", e);
@@ -128,7 +124,7 @@ public class AISettingsManager {
                 if (!enabledCategories.isEmpty()) {
                     settings.setEnabledFunctionCategories(new HashSet<>(enabledCategories));
                 }
-
+                settings.setFunctionsEnabled(JSONUtils.getBoolean(configMap, FUNCTIONS_ENABLED_KEY, true));
                 List<String> enabledFunctions = JSONUtils.getStringList(configMap, ENABLED_FUNCTIONS_KEY);
                 if (!enabledFunctions.isEmpty()) {
                     settings.setEnabledFunctions(new HashSet<>(enabledFunctions));
@@ -147,8 +143,8 @@ public class AISettingsManager {
                     if (entry.getValue() instanceof Map map) {
                         try {
                             Map<String, Object> properties = JSONUtils.getObject(map, ENGINE_PROPERTIES);
-                            JsonElement engineConfigTree = readPropsGson.toJsonTree(properties, Map.class);
-                            AIEngineProperties engineSettings = readPropsGson.fromJson(
+                            JsonElement engineConfigTree = READ_PROPS_GSON.toJsonTree(properties, Map.class);
+                            AIEngineProperties engineSettings = READ_PROPS_GSON.fromJson(
                                 engineConfigTree, engineDescriptor.getPropertiesType());
 
                             engineConfigurationMap.put(engineDescriptor.getId(), engineSettings);
@@ -199,11 +195,12 @@ public class AISettingsManager {
 
             JsonObject propertiesObject = new JsonObject();
             for (Map.Entry<String, Object> property : settings.getAllProperties().entrySet()) {
-                JsonElement propValue = savePropsGson.toJsonTree(property.getValue());
+                JsonElement propValue = SAVE_PROPS_GSON.toJsonTree(property.getValue());
                 propertiesObject.add(property.getKey(), propValue);
             }
             json.add(PROPERTIES_KEY, propertiesObject);
 
+            json.add(FUNCTIONS_ENABLED_KEY, new JsonPrimitive(settings.isFunctionsEnabled()));
             Set<String> enabledCategories = settings.getEnabledFunctionCategories();
             if (!enabledCategories.isEmpty()) {
                 JsonArray categoriesArray = new JsonArray();
@@ -225,7 +222,7 @@ public class AISettingsManager {
 
             JsonObject engineConfigurations = new JsonObject();
             for (Map.Entry<String, AIEngineProperties> configuration : settings.getEngineConfigurations().entrySet()) {
-                JsonElement savedProps = savePropsGson.toJsonTree(configuration.getValue());
+                JsonElement savedProps = SAVE_PROPS_GSON.toJsonTree(configuration.getValue());
                 if (savedProps instanceof JsonObject jo && !jo.isEmpty()) {
                     JsonObject props = new JsonObject();
                     props.add(ENGINE_PROPERTIES, savedProps);
@@ -234,7 +231,7 @@ public class AISettingsManager {
             }
             json.add(ENGINE_CONFIGURATIONS_KEY, engineConfigurations);
 
-            String content = savePropsGson.toJson(json);
+            String content = SAVE_PROPS_GSON.toJson(json);
 
             DBWorkbench.getPlatform().getConfigurationController().saveConfigurationFile(AI_CONFIGURATION_FILE_NAME, content);
 
@@ -292,62 +289,6 @@ public class AISettingsManager {
         void reset();
     }
 
-    private static class AISettingsSessionHolder implements AISettingsHolder {
-        private static final Map<SMSessionPersistent, AISettingsSessionHolder> holderBySession
-            = Collections.synchronizedMap(new WeakHashMap<>());
-
-        private final SMSessionPersistent session;
-
-        private volatile AISettings mruSettings = null;
-        private volatile boolean settingsReadInProgress = false;
-
-        private AISettingsSessionHolder(SMSessionPersistent session) {
-            this.session = session;
-        }
-
-        public static AISettingsHolder getForSession(SMSessionPersistent session) {
-            return holderBySession.computeIfAbsent(session, AISettingsSessionHolder::new);
-        }
-
-        public static void resetAll() {
-            holderBySession.clear();
-        }
-
-        @Override
-        public synchronized AISettings getSettings() {
-            AISettings mruSettings = this.mruSettings;
-            AISettings sharedSettings = this.session.getAttribute(AISettings.class.getName());
-            if (mruSettings == null || !mruSettings.equals(sharedSettings)) {
-                if (settingsReadInProgress) {
-                    // FIXME: it is a hack. Settings loading may cause infinite recursion because
-                    // conf loading shows UI which may re-ask settings
-                    // The fix is to disable UI during config read? But this lead to UI freeze..
-                    return new AISettings();
-                }
-                settingsReadInProgress = true;
-                try {
-                    // if current context is not initialized or was invalidated, then reload settings for this session
-                    this.setSettings(mruSettings = loadSettingsFromConfig());
-                } finally {
-                    settingsReadInProgress = false;
-                }
-            }
-            return mruSettings;
-        }
-
-        @Override
-        public synchronized void setSettings(AISettings mruSettings) {
-            this.mruSettings = mruSettings;
-            this.session.setAttribute(AISettings.class.getName(), mruSettings);
-        }
-
-        @Override
-        public synchronized void reset() {
-            // session contexts are not differentiated for now, so simply invalidate all of them
-            resetAll();
-        }
-    }
-
     private static class AISettingsLocalHolder implements AISettingsHolder {
         public static final AISettingsHolder INSTANCE = new AISettingsLocalHolder();
 
@@ -355,11 +296,19 @@ public class AISettingsManager {
 
         @Override
         public synchronized AISettings getSettings() {
-            AISettings settings = this.settings;
             if (settings == null) {
-                // if current context is not initialized or was invalidated, then reload settings
-                this.settings = settings = loadSettingsFromConfig();
+                AISettings loaded = loadSettingsFromConfig();
+                // This check prevents redundant reloading of settings by the same thread.
+                // Reason: loadSettingsFromConfig() may initiate loading of other bundles,
+                // which could lead subsequently to calls back into this method to
+                // modify the settings during initialization, leading to multiple
+                // loads and potential inconsistencies without this safeguard.
+
+                if (settings == null) {
+                    settings = loaded;
+                }
             }
+
             return settings;
         }
 
@@ -373,6 +322,4 @@ public class AISettingsManager {
             this.settings = null;
         }
     }
-
-
 }

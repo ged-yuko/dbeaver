@@ -1,6 +1,6 @@
 /*
  * DBeaver - Universal Database Manager
- * Copyright (C) 2010-2025 DBeaver Corp and others
+ * Copyright (C) 2010-2026 DBeaver Corp and others
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -24,15 +24,14 @@ import org.jkiss.dbeaver.model.ai.*;
 import org.jkiss.dbeaver.model.ai.engine.AIDatabaseContext;
 import org.jkiss.dbeaver.model.ai.engine.AIEngine;
 import org.jkiss.dbeaver.model.ai.engine.AIEngineRequest;
-import org.jkiss.dbeaver.model.ai.registry.AIEngineDescriptor;
-import org.jkiss.dbeaver.model.ai.registry.AIFunctionDescriptor;
-import org.jkiss.dbeaver.model.ai.registry.AIFunctionRegistry;
-import org.jkiss.dbeaver.model.ai.registry.AISettingsManager;
+import org.jkiss.dbeaver.model.ai.registry.*;
 import org.jkiss.dbeaver.model.preferences.DBPPreferenceStore;
 import org.jkiss.dbeaver.model.runtime.DBRProgressMonitor;
 import org.jkiss.dbeaver.runtime.DBWorkbench;
+import org.jkiss.utils.CommonUtils;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
@@ -64,7 +63,7 @@ public class AIEngineRequestFactory {
 
     public AIEngineRequest build(
         @NotNull DBRProgressMonitor monitor,
-        @NotNull AIEngine engine,
+        @NotNull AIEngine<?> engine,
         @NotNull AIEngineDescriptor engineDescriptor,
         @NotNull AIPromptGenerator systemPromptGenerator,
         @Nullable AIDatabaseContext databaseContext,
@@ -142,7 +141,11 @@ public class AIEngineRequestFactory {
         @NotNull AIPromptGenerator systemPromptGenerator,
         @NotNull AIEngineRequest request
     ) {
-        if (!engineDescriptor.isSupportsFunctions()) {
+        AISettings aiSettings = AISettingsManager.getInstance().getSettings();
+        if (!engineDescriptor.isSupportsFunctions()
+            || !aiSettings.isFunctionsEnabled()
+            || DBWorkbench.getPlatform().getApplication().isMultiuser() // FIXME: For now disabled for server apps
+        ) {
             return;
         }
         List<AIFunctionDescriptor> functions = new ArrayList<>();
@@ -152,19 +155,36 @@ public class AIEngineRequestFactory {
             }
         }
 
-        AISettings aiSettings = AISettingsManager.getInstance().getSettings();
+        AIPromptGeneratorDescriptor currentPromptGenerator = null;
+        for (AIPromptGeneratorDescriptor promptGeneratorDescriptor : AIPromptGeneratorRegistry.getInstance().getAllPromptGenerator()) {
+            if (systemPromptGenerator.generatorId().equals(promptGeneratorDescriptor.getId())) {
+                currentPromptGenerator = promptGeneratorDescriptor;
+                break;
+            }
+        }
+
         Set<String> enabledFunctions = aiSettings.getEnabledFunctions();
-        Set<String> enabledFunctionCategories = aiSettings.getEnabledFunctionCategories();
-        functions.removeIf(aiFunctionDescriptor ->
-            !enabledFunctions.contains(aiFunctionDescriptor.getId()) &&
-                !enabledFunctionCategories.contains(aiFunctionDescriptor.getCategoryId())
+
+        List<AIFunctionDescriptor> selectedFunctions = new ArrayList<>(functions);
+        selectedFunctions.removeIf(aiFunctionDescriptor ->
+            !enabledFunctions.contains(aiFunctionDescriptor.getId())
         );
 
-        request.setFunctions(functions);
+        Set<String> requiredByDeps = resolveDependencies(selectedFunctions, currentPromptGenerator);
+
+        if (!requiredByDeps.isEmpty()) {
+            for (AIFunctionDescriptor f : functions) {
+                if (requiredByDeps.contains(f.getId())) {
+                    selectedFunctions.add(f);
+                }
+            }
+        }
+
+        request.setFunctions(selectedFunctions);
     }
 
 
-    private static int getContextWindowSize(@NotNull DBRProgressMonitor monitor, @NotNull AIEngine engine) {
+    private static int getContextWindowSize(@NotNull DBRProgressMonitor monitor, @NotNull AIEngine<?> engine) {
         try {
             return engine.getContextWindowSize(monitor);
         } catch (DBException e) {
@@ -183,5 +203,38 @@ public class AIEngineRequestFactory {
             .withSendColumnTypes(prefs.getBoolean(AIConstants.AI_SEND_TYPE_INFO))
             .build();
 
+    }
+
+    /**
+     * Resolves transitive dependencies for the given list of already selected function descriptors.
+     */
+    @NotNull
+    private static Set<String> resolveDependencies(@NotNull List<AIFunctionDescriptor> selected, @Nullable AIPromptGeneratorDescriptor pg) {
+        Set<String> result = new HashSet<>();
+        for (AIFunctionDescriptor fd : selected) {
+            collectDependencies(fd.getDependsOn(), result);
+        }
+        if (pg != null) {
+            collectDependencies(pg.getDependsOn(), result);
+        }
+        return result;
+    }
+
+    private static void collectDependencies(
+        @NotNull String[] dependencies,
+        @NotNull Set<String> result
+    ) {
+        for (String depId : dependencies) {
+            if (CommonUtils.isEmpty(depId)) {
+                continue;
+            }
+            if (!result.add(depId)) {
+                continue;
+            }
+            AIFunctionDescriptor dep = AIFunctionRegistry.getInstance().getFunction(depId);
+            if (dep != null) {
+                collectDependencies(dep.getDependsOn(), result);
+            }
+        }
     }
 }

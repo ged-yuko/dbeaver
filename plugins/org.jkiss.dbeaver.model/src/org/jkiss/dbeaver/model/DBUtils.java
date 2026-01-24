@@ -2072,7 +2072,8 @@ public final class DBUtils {
         return dataSource.getDefaultInstance();
     }
 
-    public static DBCExecutionContext getDefaultContext(DBSObject object, boolean meta) {
+    @Nullable
+    public static DBCExecutionContext getDefaultContext(@Nullable DBSObject object, boolean meta) {
         if (object == null) {
             return null;
         }
@@ -2299,6 +2300,13 @@ public final class DBUtils {
                 return ot.getTypeName();
             }
         }
+        if (object instanceof DBSSchema) {
+            return "Schema";
+        } else if (object instanceof DBSCatalog) {
+            return "Catalog";
+        } else if (object instanceof DBSEntity) {
+            return "Entity";
+        }
         return "Object";
     }
 
@@ -2506,8 +2514,6 @@ public final class DBUtils {
                     dataFilter,
                     DBSDataContainer.FLAG_NONE);
                 result[0] = rowCount;
-            } catch (DBCException e) {
-                throw new InvocationTargetException(e);
             }
         });
         return result[0];
